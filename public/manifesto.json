@@ -1,0 +1,16 @@
+{
+  "name": "SOS Truck Service — Gestão de Fichas e Peças",
+  "short_name": "SOS Truck",
+  "description": "Fichas de inspeção, solicitação de peças, cotação e ordens de compra.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F4F5F7",
+  "theme_color": "#23262B",
+  "orientation": "portrait-primary",
+  "lang": "pt-BR",
+  "icons": [
+    { "src": "/img/favicon-32.png", "sizes": "32x32", "type": "image/png" },
+    { "src": "/img/favicon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/img/apple-touch-icon.png", "sizes": "180x180", "type": "image/png" }
+  ]
+}
