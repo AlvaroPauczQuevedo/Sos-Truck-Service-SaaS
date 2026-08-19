@@ -29,8 +29,8 @@ Durante o desenvolvimento, `npm run dev` reinicia o servidor a cada alteração.
 | Mecânico      | mecanico@sostruck.com.br    | `sos12345` |
 | Mecânico      | jonas@sostruck.com.br       | `sos12345` |
 
-> Os botões de acesso rápido na tela de login existem apenas para a demonstração.
-> Para produção, remova o bloco `.acesso-demo` em `public/js/views/acesso.js`.
+> Válido apenas em ambiente de desenvolvimento/seed com dados de demonstração.
+> Troque as senhas no primeiro acesso em *Configurações › Minha conta*.
 
 ### Começar com os dados reais da SOS Truck Service
 

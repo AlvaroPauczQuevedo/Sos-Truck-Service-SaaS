@@ -38,16 +38,7 @@ export function telaLogin(raiz, { aoEntrar, irPara }) {
       </div>
       <button class="botao botao-principal botao-bloco botao-grande" type="submit">Entrar</button>
       <button class="botao botao-texto botao-bloco" type="button" data-esqueci>Esqueci minha senha</button>
-    </form>`, `
-    <div class="acesso-demo">
-      <b>Acessos de demonstração</b>
-      <button type="button" data-demo="admin@sostruck.com.br">
-        <span>Administração</span><span>admin@sostruck.com.br</span>
-      </button>
-      <button type="button" data-demo="mecanico@sostruck.com.br">
-        <span>Mecânico</span><span>mecanico@sostruck.com.br</span>
-      </button>
-    </div>`);
+    </form>`);
 
   const form = raiz.querySelector('#form-login');
   const email = raiz.querySelector('#email');
@@ -59,9 +50,6 @@ export function telaLogin(raiz, { aoEntrar, irPara }) {
     e.target.textContent = mostrando ? 'Ver' : 'Ocultar';
   };
   raiz.querySelector('[data-esqueci]').onclick = () => irPara('#/recuperar-senha');
-  raiz.querySelectorAll('[data-demo]').forEach((b) => {
-    b.onclick = () => { email.value = b.dataset.demo; senha.value = 'sos12345'; senha.focus(); };
-  });
 
   form.onsubmit = async (e) => {
     e.preventDefault();
