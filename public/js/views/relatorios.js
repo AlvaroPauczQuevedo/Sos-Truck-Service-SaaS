@@ -1,6 +1,7 @@
 /** Relatórios gerenciais com filtro por período e exportação em CSV. */
 import { api } from '../api.js';
-import { icone, carregando, avisarErro, vazio } from '../ui.js';
+import { estado } from '../estado.js';
+import { icone, carregando, avisarErro, vazio, seloDominio } from '../ui.js';
 import { esc, moeda, numero, placa as fPlaca, juntar } from '../utils.js';
 
 const ABAS = [
@@ -154,7 +155,7 @@ async function relatorioGeral(periodo) {
       <h2 class="secao">Fichas por situação</h2>
       <div class="cartao mb12"><div class="cartao-corpo">
         ${r.por_status.map((s) => `
-          <div class="linha-info"><span class="rot">${esc(s.status)}</span><span class="val">${numero(s.total)}</span></div>`).join('')}
+          <div class="linha-info"><span class="rot">${seloDominio(estado.dominios.status_ficha, s.status)}</span><span class="val">${numero(s.total)}</span></div>`).join('')}
       </div></div>` : ''}
 
     ${botoesExportacao(periodo)}`;
