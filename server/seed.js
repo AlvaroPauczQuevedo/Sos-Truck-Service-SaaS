@@ -464,4 +464,4 @@ function main() {
   console.log('  Mecânico      → mecanico@sostruck.com.br / sos12345');
 }
 
-main();
+db.ready.then(main);

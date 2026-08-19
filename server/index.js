@@ -9,7 +9,7 @@ const express = require('express');
 const cookieParser = require('cookie-parser');
 const multer = require('multer');
 
-require('./db'); // cria/migra o banco na inicializacao
+const { db: bancoDados } = require('./db'); // cria/migra o banco na inicializacao
 
 const { AppError, erro, rota } = require('./lib/http');
 const { identificar, exigirLogin } = require('./lib/auth');
@@ -94,8 +94,10 @@ app.use((err, req, res, _next) => {
 
 const PORTA = Number(process.env.PORT || 3000);
 if (require.main === module) {
-  app.listen(PORTA, '0.0.0.0', () => {
-    console.log(`SOS Truck Service rodando em http://localhost:${PORTA}`);
+  bancoDados.ready.then(() => {
+    app.listen(PORTA, '0.0.0.0', () => {
+      console.log(`SOS Truck Service rodando em http://localhost:${PORTA}`);
+    });
   });
 }
 

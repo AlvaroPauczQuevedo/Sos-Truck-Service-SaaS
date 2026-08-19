@@ -1,12 +1,18 @@
 'use strict';
 /**
- * Camada de banco de dados - SQLite (better-sqlite3).
- * Estrutura preparada para crescimento: chaves estrangeiras, indices,
- * numeracao sequencial por ano, historico de alteracoes e soft delete.
+ * Camada de banco de dados - SQLite (sql.js, motor real do SQLite compilado
+ * para WebAssembly). Usado no lugar do better-sqlite3 porque a hospedagem
+ * compartilhada nao tem compilador C disponivel para modulos nativos.
+ * A API exposta (prepare/run/get/all/transaction/pragma) imita o
+ * better-sqlite3 de proposito, para nao precisar alterar as rotas.
+ *
+ * sql.js opera em memoria; o banco inteiro e serializado e gravado em disco
+ * (de forma atomica, via arquivo temporario + rename) pouco depois de cada
+ * escrita, e tambem ao encerrar o processo.
  */
 const path = require('path');
 const fs = require('fs');
-const Database = require('better-sqlite3');
+const initSqlJs = require('sql.js');
 
 const DB_PATH = process.env.DB_PATH
   ? path.resolve(process.env.DB_PATH)
@@ -14,10 +20,123 @@ const DB_PATH = process.env.DB_PATH
 
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
-const db = new Database(DB_PATH);
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
-db.pragma('busy_timeout = 5000');
+let sqljs = null;
+let sujo = false;
+let temporizador = null;
+
+function normalizarValor(v) {
+  if (v === undefined) return null;
+  if (v === true) return 1;
+  if (v === false) return 0;
+  return v;
+}
+
+/** Converte os args de .run/.get/.all no formato que o sql.js espera. */
+function normalizarParametros(params) {
+  if (params.length === 0) return undefined;
+  if (params.length === 1 && params[0] !== null && typeof params[0] === 'object' && !Array.isArray(params[0])) {
+    const nomeados = {};
+    for (const [chave, valor] of Object.entries(params[0])) nomeados[`@${chave}`] = normalizarValor(valor);
+    return nomeados;
+  }
+  return params.map(normalizarValor);
+}
+
+/** Imita o err.code que o better-sqlite3 define em violacoes de UNIQUE. */
+function normalizarErro(err) {
+  if (err && !err.code && /UNIQUE constraint failed/i.test(err.message || '')) {
+    err.code = 'SQLITE_CONSTRAINT_UNIQUE';
+  }
+  return err;
+}
+
+function gravarNoDisco() {
+  if (!sujo || !sqljs) return;
+  sujo = false;
+  const bytes = Buffer.from(sqljs.export());
+  const tmp = `${DB_PATH}.tmp`;
+  fs.writeFileSync(tmp, bytes);
+  fs.renameSync(tmp, DB_PATH);
+}
+
+function marcarSujo() {
+  sujo = true;
+  if (temporizador) return;
+  temporizador = setTimeout(() => { temporizador = null; gravarNoDisco(); }, 150);
+  if (temporizador.unref) temporizador.unref();
+}
+
+function criarStatement(sql) {
+  return {
+    run(...params) {
+      const stmt = sqljs.prepare(sql);
+      try {
+        const bind = normalizarParametros(params);
+        if (bind !== undefined) stmt.bind(bind);
+        stmt.step();
+      } catch (err) {
+        throw normalizarErro(err);
+      } finally {
+        stmt.free();
+      }
+      const changes = sqljs.getRowsModified();
+      const idRow = sqljs.exec('SELECT last_insert_rowid() AS id');
+      const lastInsertRowid = idRow.length ? idRow[0].values[0][0] : undefined;
+      marcarSujo();
+      return { changes, lastInsertRowid };
+    },
+    get(...params) {
+      const stmt = sqljs.prepare(sql);
+      let linha;
+      try {
+        const bind = normalizarParametros(params);
+        if (bind !== undefined) stmt.bind(bind);
+        linha = stmt.step() ? stmt.getAsObject() : undefined;
+      } catch (err) {
+        throw normalizarErro(err);
+      } finally {
+        stmt.free();
+      }
+      return linha;
+    },
+    all(...params) {
+      const stmt = sqljs.prepare(sql);
+      const linhas = [];
+      try {
+        const bind = normalizarParametros(params);
+        if (bind !== undefined) stmt.bind(bind);
+        while (stmt.step()) linhas.push(stmt.getAsObject());
+      } catch (err) {
+        throw normalizarErro(err);
+      } finally {
+        stmt.free();
+      }
+      return linhas;
+    },
+  };
+}
+
+const db = {
+  prepare: (sql) => criarStatement(sql),
+  exec: (sql) => { sqljs.run(sql); marcarSujo(); },
+  pragma: (texto) => {
+    // WAL e busy_timeout nao fazem sentido num banco em memoria de processo unico.
+    if (/^journal_mode/i.test(texto) || /^busy_timeout/i.test(texto)) return;
+    sqljs.run(`PRAGMA ${texto}`);
+  },
+  transaction: (fn) => (...args) => {
+    sqljs.run('BEGIN');
+    try {
+      const resultado = fn(...args);
+      sqljs.run('COMMIT');
+      marcarSujo();
+      return resultado;
+    } catch (err) {
+      try { sqljs.run('ROLLBACK'); } catch { /* sem transacao aberta */ }
+      throw normalizarErro(err);
+    }
+  },
+};
 
 const SCHEMA = `
 -- ------------------------------------------------------------------
@@ -419,8 +538,6 @@ CREATE TABLE IF NOT EXISTS configuracoes (
 );
 `;
 
-db.exec(SCHEMA);
-
 /** Gera o proximo numero sequencial no formato PREFIXO-ANO-0000. */
 const proximoNumero = db.transaction((tipo, ano) => {
   db.prepare(
@@ -434,6 +551,24 @@ const proximoNumero = db.transaction((tipo, ano) => {
 
 function gerarNumero(tipo) {
   return proximoNumero(tipo, new Date().getFullYear());
+}
+
+/** Resolve quando o banco (em memoria) esta carregado e pronto para uso. */
+db.ready = (async () => {
+  const SQL = await initSqlJs();
+  let bytes;
+  try { bytes = fs.readFileSync(DB_PATH); } catch { bytes = undefined; }
+  sqljs = bytes && bytes.length ? new SQL.Database(bytes) : new SQL.Database();
+  sqljs.run('PRAGMA foreign_keys = ON');
+  sqljs.run(SCHEMA);
+  if (!bytes || !bytes.length) { sujo = true; gravarNoDisco(); }
+})();
+
+for (const sinal of ['exit', 'SIGINT', 'SIGTERM']) {
+  process.on(sinal, () => {
+    gravarNoDisco();
+    if (sinal !== 'exit') process.exit(0);
+  });
 }
 
 module.exports = { db, gerarNumero, DB_PATH };
