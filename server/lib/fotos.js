@@ -1,8 +1,9 @@
 'use strict';
 /** Helpers de fotos compartilhados entre as rotas. */
 const { db } = require('../db');
-const { caminhoRelativo } = require('./upload');
+const { caminhoRelativo, conferirEnviados } = require('./upload');
 const { registrar } = require('./registro');
+const imagem = require('./imagem');
 
 const listar = (entidade, entidade_id) =>
   db.prepare(
@@ -15,7 +16,15 @@ const listar = (entidade, entidade_id) =>
 
 /** Registra no banco os arquivos recebidos pelo multer. */
 function salvar(req, entidade, entidade_id, arquivos, legenda = null) {
-  const lista = arquivos || [];
+  // O tipo declarado pelo navegador nao vale nada: so entra o que for imagem
+  // de verdade pelos primeiros bytes. O que nao for e apagado do disco.
+  const { aceitos: lista, recusados } = conferirEnviados(arquivos);
+  if (recusados.length) {
+    console.warn(`[foto] ${recusados.length} arquivo(s) recusado(s): conteúdo não é imagem.`);
+    // Nao lanca: uma foto ruim nao pode desfazer a ficha que acabou de ser criada.
+    // Quem so anexa foto confere isto e avisa o usuario.
+    if (req) req.fotosRecusadas = (req.fotosRecusadas || 0) + recusados.length;
+  }
   if (!lista.length) return [];
   const inserir = db.prepare(
     `INSERT INTO fotos (entidade, entidade_id, arquivo, nome_original, mime, tamanho, legenda, criado_por)
@@ -36,6 +45,14 @@ function salvar(req, entidade, entidade_id, arquivos, legenda = null) {
     entidade, entidade_id, acao: 'fotos_adicionadas',
     descricao: `${lista.length} foto(s) anexada(s)`,
   });
+
+  // Prepara desde ja a copia reduzida usada na impressao. Reduzir uma foto de
+  // celular leva cerca de um segundo: pago aqui, logo apos o envio, o PDF sai
+  // na hora quando alguem mandar imprimir a ficha ou a ordem de compra.
+  for (const arq of lista) {
+    const relativo = caminhoRelativo(arq.path);
+    setImmediate(() => imagem.paraImpressao({ arquivo: relativo, mime: arq.mimetype }));
+  }
   return ids;
 }
 
@@ -55,4 +72,16 @@ function desvincular(req, id) {
   return foto;
 }
 
-module.exports = { listar, salvar, desvincular };
+/** Usado pelas rotas que so anexam foto: reclama se nada valido sobrou. */
+function exigirAlgumaFotoValida(req) {
+  if (req.fotosRecusadas) {
+    const { erro } = require('./http');
+    throw erro.requisicao(
+      req.fotosRecusadas === 1
+        ? 'O arquivo enviado não é uma imagem válida. Envie JPG, PNG, WEBP ou HEIC.'
+        : `${req.fotosRecusadas} arquivos não são imagens válidas. Envie JPG, PNG, WEBP ou HEIC.`
+    );
+  }
+}
+
+module.exports = { listar, salvar, desvincular, exigirAlgumaFotoValida };

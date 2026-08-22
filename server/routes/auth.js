@@ -9,45 +9,65 @@ const { registrar } = require('../lib/registro');
 
 const router = express.Router();
 
-// Controle simples de forca bruta por e-mail + IP (em memoria).
-const tentativas = new Map();
-const JANELA = 15 * 60 * 1000;
-const LIMITE = 8;
+/**
+ * Controle simples de repeticao por e-mail + IP (em memoria, por processo).
+ * Usado no login (conta so as falhas) e na recuperacao de senha (conta toda
+ * tentativa, porque de fora nao da para distinguir sucesso de falha).
+ */
+function criarLimitador({ limite, janela }) {
+  const registros = new Map();
 
-function chaveTentativa(req, email) {
-  const ip = (req.headers['x-forwarded-for'] || req.ip || '').toString().split(',')[0].trim();
-  return `${ip}|${email}`;
+  const limpar = () => {
+    const agora = Date.now();
+    for (const [chave, reg] of registros) {
+      if (agora - reg.desde > janela) registros.delete(chave);
+    }
+  };
+
+  return {
+    chave(req, email) {
+      // req.ip respeita o `trust proxy` do app; ler o cabecalho cru deixaria o
+      // proprio atacante escolher a chave do limite e repetir a vontade.
+      return `${req.ip || 'desconhecido'}|${email}`;
+    },
+    bloqueado(chave) {
+      const reg = registros.get(chave);
+      if (!reg) return false;
+      if (Date.now() - reg.desde > janela) { registros.delete(chave); return false; }
+      return reg.total >= limite;
+    },
+    contar(chave) {
+      // A recuperacao de senha e anonima: sem esta poda o mapa cresceria sem fim.
+      if (registros.size > 5000) limpar();
+      const reg = registros.get(chave) || { total: 0, desde: Date.now() };
+      if (Date.now() - reg.desde > janela) { reg.total = 0; reg.desde = Date.now(); }
+      reg.total += 1;
+      registros.set(chave, reg);
+    },
+    liberar(chave) { registros.delete(chave); },
+  };
 }
-function bloqueado(chave) {
-  const reg = tentativas.get(chave);
-  if (!reg) return false;
-  if (Date.now() - reg.desde > JANELA) { tentativas.delete(chave); return false; }
-  return reg.total >= LIMITE;
-}
-function falhou(chave) {
-  const reg = tentativas.get(chave) || { total: 0, desde: Date.now() };
-  if (Date.now() - reg.desde > JANELA) { reg.total = 0; reg.desde = Date.now(); }
-  reg.total += 1;
-  tentativas.set(chave, reg);
-}
+
+const limiteLogin = criarLimitador({ limite: 8, janela: 15 * 60 * 1000 });
+const limiteRecuperacao = criarLimitador({ limite: 5, janela: 60 * 60 * 1000 });
 
 router.post('/login', rota((req, res) => {
   const email = v.email(req.body.email, 'e-mail');
   const senha = String(req.body.senha || '');
-  const chave = chaveTentativa(req, email);
+  const chave = limiteLogin.chave(req, email);
 
-  if (bloqueado(chave)) {
+  if (limiteLogin.bloqueado(chave)) {
     throw erro.requisicao('Muitas tentativas seguidas. Aguarde 15 minutos e tente novamente.');
   }
 
   const usuario = db.prepare('SELECT * FROM usuarios WHERE email = ?').get(email);
   if (!usuario || !a.conferirSenha(senha, usuario.senha_hash)) {
-    falhou(chave);
+    limiteLogin.contar(chave);
     throw new (require('../lib/http').AppError)(401, 'E-mail ou senha incorretos.');
   }
   if (!usuario.ativo) throw erro.semPermissao('Este usuário está inativo. Procure a administração.');
 
-  tentativas.delete(chave);
+  limiteLogin.liberar(chave);
   db.prepare("UPDATE usuarios SET ultimo_acesso = datetime('now') WHERE id = ?").run(usuario.id);
 
   const token = a.gerarToken(usuario);
@@ -66,6 +86,9 @@ router.post('/login', rota((req, res) => {
 
 router.post('/logout', rota((req, res) => {
   if (req.usuario) {
+    // Limpar o cookie nao basta: quem tivesse copiado o token continuaria entrando
+    // com ele ate expirar. A sessao deste aparelho e invalidada no servidor.
+    a.revogarSessao(req.sessao);
     registrar(req, { entidade: 'usuario', entidade_id: req.usuario.id, acao: 'logout', descricao: 'Saiu do sistema' });
   }
   a.limparCookie(res);
@@ -80,16 +103,32 @@ router.get('/sessao', rota((req, res) => {
   res.json({ usuario: req.usuario, notificacoes_nao_lidas: naoLidas });
 }));
 
-/** Solicita recuperacao. A resposta e sempre igual para nao revelar cadastros. */
+/**
+ * Solicita a recuperacao de senha. Endpoint anonimo, por isso:
+ *
+ * - A resposta e SEMPRE identica, exista o cadastro ou nao, para nao revelar
+ *   quem tem conta no sistema.
+ * - O link NUNCA volta na resposta. Devolve-lo aqui entregaria o token de troca
+ *   de senha a qualquer pessoa que soubesse o e-mail do administrador, o que e
+ *   tomada de conta direta, sem precisar de senha nenhuma.
+ *
+ * Sem servico de e-mail configurado, o link sai no log do servidor e pode ser
+ * gerado pela administracao em Usuários (POST /api/usuarios/:id/link-recuperacao).
+ * Para envio automatico, basta plugar um provedor SMTP no lugar do console.log.
+ */
 router.post('/recuperar-senha', rota((req, res) => {
   const email = v.email(req.body.email, 'e-mail');
-  const usuario = db.prepare('SELECT id, nome FROM usuarios WHERE email = ? AND ativo = 1').get(email);
-
   const resposta = {
     ok: true,
-    mensagem: 'Se este e-mail estiver cadastrado, o link de recuperação foi gerado. Procure a administração caso não o receba.',
+    mensagem: 'Se este e-mail estiver cadastrado, a recuperação foi registrada. '
+      + 'Procure a administração para receber o link de redefinição.',
   };
 
+  const chave = limiteRecuperacao.chave(req, email);
+  if (limiteRecuperacao.bloqueado(chave)) return res.json(resposta);
+  limiteRecuperacao.contar(chave);
+
+  const usuario = db.prepare('SELECT id, nome FROM usuarios WHERE email = ? AND ativo = 1').get(email);
   if (!usuario) return res.json(resposta);
 
   const token = a.gerarTokenRecuperacao();
@@ -102,41 +141,44 @@ router.post('/recuperar-senha', rota((req, res) => {
     descricao: `Recuperação de senha solicitada para ${email}`,
   });
 
-  // Sem servico de e-mail configurado, o link fica disponivel para a administracao
-  // repassar ao usuario. Basta plugar um provedor SMTP aqui para envio automatico.
-  resposta.link_recuperacao = `/#/redefinir-senha?token=${token}`;
+  console.log(
+    `[recuperação de senha] ${usuario.nome} <${email}> — link válido por 1 hora:\n`
+    + `                       /#/redefinir-senha?token=${token}`
+  );
   return res.json(resposta);
 }));
 
 router.post('/redefinir-senha', rota((req, res) => {
   const token = v.texto(req.body.token, 'token', { obrigatorio: true });
-  const senha = a.validarForcaSenha(req.body.senha);
   if (req.body.senha !== req.body.confirmacao) {
     throw erro.requisicao('A confirmação da senha não confere.', { campo: 'confirmacao' });
   }
 
   const usuario = db.prepare(
-    `SELECT id, nome FROM usuarios
+    `SELECT id, nome, email FROM usuarios
      WHERE reset_token = ? AND reset_expira IS NOT NULL AND reset_expira > datetime('now') AND ativo = 1`
   ).get(a.hashRecuperacao(token));
 
   if (!usuario) throw erro.requisicao('Link de recuperação inválido ou expirado. Solicite um novo.');
+  const senha = a.validarForcaSenha(req.body.senha, { email: usuario.email });
 
   db.prepare(
     `UPDATE usuarios SET senha_hash = ?, reset_token = NULL, reset_expira = NULL,
      atualizado_em = datetime('now') WHERE id = ?`
   ).run(a.criarHash(senha), usuario.id);
+  // Quem redefine a senha costuma estar justamente tentando expulsar um intruso.
+  a.encerrarSessoes(usuario.id);
 
   registrar(req, {
     entidade: 'usuario', entidade_id: usuario.id, acao: 'senha_redefinida',
-    descricao: 'Senha redefinida pelo link de recuperação',
+    descricao: 'Senha redefinida pelo link de recuperação — sessões abertas encerradas',
   });
   res.json({ ok: true, mensagem: 'Senha redefinida com sucesso. Faça login com a nova senha.' });
 }));
 
 router.post('/trocar-senha', a.exigirLogin, rota((req, res) => {
   const atual = String(req.body.senha_atual || '');
-  const nova = a.validarForcaSenha(req.body.senha_nova);
+  const nova = a.validarForcaSenha(req.body.senha_nova, { email: req.usuario.email });
   if (req.body.senha_nova !== req.body.confirmacao) {
     throw erro.requisicao('A confirmação da senha não confere.', { campo: 'confirmacao' });
   }
@@ -148,8 +190,18 @@ router.post('/trocar-senha', a.exigirLogin, rota((req, res) => {
 
   db.prepare("UPDATE usuarios SET senha_hash = ?, atualizado_em = datetime('now') WHERE id = ?")
     .run(a.criarHash(nova), usuario.id);
-  registrar(req, { entidade: 'usuario', entidade_id: usuario.id, acao: 'senha_alterada', descricao: 'Alterou a própria senha' });
-  res.json({ ok: true, mensagem: 'Senha alterada com sucesso.' });
+
+  // Derruba as sessoes antigas e reemite a desta aba, para quem trocou a senha
+  // nao ser deslogado do proprio aparelho no meio do caminho.
+  a.encerrarSessoes(usuario.id);
+  const atualizado = db.prepare('SELECT * FROM usuarios WHERE id = ?').get(usuario.id);
+  a.definirCookie(res, a.gerarToken(atualizado));
+
+  registrar(req, {
+    entidade: 'usuario', entidade_id: usuario.id, acao: 'senha_alterada',
+    descricao: 'Alterou a própria senha — demais aparelhos desconectados',
+  });
+  res.json({ ok: true, mensagem: 'Senha alterada. Os outros aparelhos conectados foram desconectados.' });
 }));
 
 router.put('/perfil', a.exigirLogin, rota((req, res) => {

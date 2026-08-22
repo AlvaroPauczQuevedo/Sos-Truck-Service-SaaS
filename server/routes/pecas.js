@@ -191,6 +191,7 @@ router.post('/:id/fotos', upload.array('fotos', 12), rota((req, res) => {
     throw erro.semPermissao('Esta peça pertence à ficha de outro mecânico.');
   }
   fotosLib.salvar(req, 'peca', peca.id, req.files, v.texto(req.body.legenda, 'Legenda', { max: 200 }));
+  fotosLib.exigirAlgumaFotoValida(req);
   res.status(201).json({ ok: true, fotos: fotosLib.listar('peca', peca.id) });
 }));
 

@@ -2,6 +2,7 @@
 /** Geracao de PDF (ordem de compra e ficha mecanica) com PDFKit. */
 const PDFDocument = require('pdfkit');
 const f = require('./formato');
+const imagem = require('./imagem');
 const { STATUS_OC, STATUS_FICHA, PRIORIDADES, GRAVIDADES, URGENCIAS, STATUS_PECA, TIPOS_PECA } = require('./dominio');
 
 const VERMELHO = '#C81E1E';
@@ -174,6 +175,130 @@ function totais(doc, linhas) {
   doc.fillColor(GRAFITE);
 }
 
+// ------------------------------------------------------------------ Fotos
+const FOTOS_POR_GRUPO = 8;   // por problema / peca / item
+const FOTOS_POR_PDF = 32;    // teto do documento inteiro
+const FOTO_ALTURA = 148;                    // moldura da imagem
+const FOTO_CELULA = FOTO_ALTURA + 26;       // moldura + as duas linhas de legenda
+
+/**
+ * Subtitulo que separa as fotos de cada problema, peca ou item. Reserva o
+ * espaco do titulo MAIS o da primeira fileira de fotos: sem isso o titulo fica
+ * orfao no pe da pagina e as fotos dele comecam so na pagina seguinte.
+ */
+function subsecao(doc, texto, alturaJunto = 0) {
+  garantirEspaco(doc, 26 + alturaJunto);
+  doc.font('Helvetica-Bold').fontSize(8).fillColor(GRAFITE)
+    .text(texto, MARGEM, doc.y, { width: LARGURA });
+  doc.y += 4;
+}
+
+function nota(doc, texto) {
+  garantirEspaco(doc, 20);
+  doc.font('Helvetica-Oblique').fontSize(7.5).fillColor(CINZA)
+    .text(texto, MARGEM, doc.y, { width: LARGURA });
+  doc.moveDown(0.4);
+  doc.fillColor(GRAFITE);
+}
+
+/**
+ * Monta os blocos de fotos a partir da lista achatada que a rota entrega.
+ * `blocos` descreve a ordem e o titulo de cada agrupamento.
+ */
+function agruparFotos(fotos, blocos) {
+  const lista = fotos || [];
+  const grupos = [];
+  for (const bloco of blocos) {
+    const doBloco = lista.filter(
+      (ft) => ft.entidade === bloco.entidade && Number(ft.entidade_id) === Number(bloco.id)
+    );
+    if (doBloco.length) grupos.push({ titulo: bloco.titulo, fotos: doBloco });
+  }
+  return grupos;
+}
+
+const totalDeFotos = (grupos) => grupos.reduce((s, g) => s + g.fotos.length, 0);
+
+/** Grade de duas colunas com moldura, foto ajustada e legenda. */
+function galeria(doc, grupo, restante) {
+  const colunas = 2;
+  const vao = 12;
+  const larguraCel = (LARGURA - vao * (colunas - 1)) / colunas;
+  const alturaImg = FOTO_ALTURA;
+  const alturaCel = FOTO_CELULA;
+  const fotos = grupo.fotos;
+
+  const mostrar = fotos.slice(0, Math.max(0, Math.min(FOTOS_POR_GRUPO, restante.disponivel)));
+  subsecao(doc, grupo.titulo, mostrar.length ? alturaCel : 0);
+
+  for (let i = 0; i < mostrar.length; i += colunas) {
+    const linha = mostrar.slice(i, i + colunas);
+    garantirEspaco(doc, alturaCel + 6);
+    const y = doc.y;
+
+    linha.forEach((foto, c) => {
+      const x = MARGEM + c * (larguraCel + vao);
+      doc.rect(x, y, larguraCel, alturaImg).fillAndStroke('#FAFAFB', BORDA);
+
+      const preparada = imagem.paraImpressao(foto);
+      let impressa = false;
+      if (preparada) {
+        try {
+          doc.image(preparada.buffer, x + 4, y + 4, {
+            fit: [larguraCel - 8, alturaImg - 8], align: 'center', valign: 'center',
+          });
+          impressa = true;
+        } catch { /* imagem recusada pelo PDFKit: cai no aviso abaixo */ }
+      }
+      if (!impressa) {
+        doc.font('Helvetica-Oblique').fontSize(7.5).fillColor(CINZA).text(
+          'Esta foto não pôde ser impressa\n(formato não suportado no PDF).\nVeja a imagem no sistema.',
+          x + 8, y + alturaImg / 2 - 16, { width: larguraCel - 16, align: 'center' }
+        );
+      }
+
+      const yTexto = y + alturaImg + 4;
+      doc.font('Helvetica-Bold').fontSize(7).fillColor(GRAFITE).text(
+        foto.legenda || `Foto ${i + c + 1}`,
+        x, yTexto, { width: larguraCel, lineBreak: false, ellipsis: true }
+      );
+      doc.font('Helvetica').fontSize(6.5).fillColor(CINZA).text(
+        [foto.enviado_por, foto.criado_em && f.dataHoraBR(foto.criado_em)].filter(Boolean).join(' • '),
+        x, yTexto + 9, { width: larguraCel, lineBreak: false, ellipsis: true }
+      );
+    });
+
+    doc.y = y + alturaCel;
+    doc.fillColor(GRAFITE);
+  }
+
+  restante.disponivel -= mostrar.length;
+  if (fotos.length > mostrar.length) {
+    doc.moveDown(0.2);
+    nota(doc, `+ ${fotos.length - mostrar.length} foto(s) deste item não impressa(s) — consulte no sistema.`);
+  }
+  doc.moveDown(0.4);
+}
+
+/** Secao completa de fotos; nao desenha nada quando nao ha imagem anexada. */
+function secaoFotos(doc, grupos, titulo) {
+  const total = totalDeFotos(grupos);
+  if (!total) return;
+
+  // Faixa da seção + subtítulo do primeiro grupo + uma fileira de fotos: assim a
+  // seção nunca abre no pé de uma página com as imagens só na seguinte.
+  garantirEspaco(doc, 28 + 26 + FOTO_CELULA);
+  secao(doc, `${titulo} (${total})`);
+  const restante = { disponivel: FOTOS_POR_PDF };
+  for (const grupo of grupos) {
+    if (restante.disponivel <= 0) break;
+    galeria(doc, grupo, restante);
+  }
+  if (total > FOTOS_POR_PDF) {
+    nota(doc, `Este documento imprime as ${FOTOS_POR_PDF} primeiras fotos. As demais permanecem disponíveis no sistema.`);
+  }
+}
+
 function rodape(doc, config) {
   const paginas = doc.bufferedPageRange();
   for (let i = 0; i < paginas.count; i++) {
@@ -197,7 +322,7 @@ function rodape(doc, config) {
 
 // ------------------------------------------------------------------ Ordem de compra
 function ordemCompraPDF(dados, config = {}) {
-  const { ordem, itens, fornecedor, caminhao, empresa, ficha, responsavel } = dados;
+  const { ordem, itens, fornecedor, caminhao, empresa, ficha, responsavel, fotos } = dados;
   const doc = novoDocumento(`Ordem de compra ${ordem.numero}`);
 
   cabecalho(doc, 'ORDEM DE COMPRA', ordem.numero, config);
@@ -267,6 +392,14 @@ function ordemCompraPDF(dados, config = {}) {
   paragrafo(doc, 'Endereço de entrega', ordem.endereco_entrega || config.endereco_entrega || 'A combinar com a administração.');
   paragrafo(doc, 'Observações', ordem.observacoes || 'Sem observações.');
 
+  // Fotos da peca ajudam o fornecedor a confirmar que separou o item certo.
+  // A numeracao acompanha a tabela de pecas acima, por isso o indice vem antes do filtro.
+  secaoFotos(doc, agruparFotos(fotos, itens
+    .map((it, i) => ({
+      entidade: 'peca', id: it.peca_id, titulo: `Item ${String(i + 1).padStart(2, '0')} — ${it.descricao}`,
+    }))
+    .filter((bloco) => bloco.id)), 'Fotos das peças');
+
   garantirEspaco(doc, 90);
   doc.moveDown(2);
   const yAss = doc.y;
@@ -285,7 +418,7 @@ function ordemCompraPDF(dados, config = {}) {
 
 // ------------------------------------------------------------------ Ficha mecanica
 function fichaPDF(dados, config = {}, { incluirValores = false } = {}) {
-  const { ficha, caminhao, empresa, mecanico, problemas, pecas, comentarios } = dados;
+  const { ficha, caminhao, empresa, mecanico, problemas, pecas, comentarios, fotos } = dados;
   const doc = novoDocumento(`Ficha ${ficha.numero}`);
 
   cabecalho(doc, 'FICHA DE INSPEÇÃO MECÂNICA', ficha.numero, config);
@@ -396,6 +529,18 @@ function fichaPDF(dados, config = {}, { incluirValores = false } = {}) {
       doc.moveDown(0.5);
     });
   }
+
+  // As fotos vao no fim, agrupadas pelo problema ou pela peca que documentam,
+  // para nao quebrar a leitura das tabelas.
+  secaoFotos(doc, agruparFotos(fotos, [
+    { entidade: 'ficha', id: ficha.id, titulo: 'Fotos gerais da ficha' },
+    ...problemas.map((p, i) => ({
+      entidade: 'problema', id: p.id, titulo: `Problema ${String(i + 1).padStart(2, '0')} — ${p.titulo}`,
+    })),
+    ...pecas.map((p, i) => ({
+      entidade: 'peca', id: p.id, titulo: `Peça ${String(i + 1).padStart(2, '0')} — ${p.nome}`,
+    })),
+  ]), 'Fotos anexadas');
 
   garantirEspaco(doc, 90);
   doc.moveDown(2);

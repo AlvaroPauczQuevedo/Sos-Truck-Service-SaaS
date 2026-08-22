@@ -76,14 +76,15 @@ export function telaLogin(raiz, { aoEntrar, irPara }) {
 export function telaRecuperarSenha(raiz, { irPara }) {
   raiz.innerHTML = moldura(`
     <h1>Recuperar senha</h1>
-    <p class="apoio">Informe seu e-mail cadastrado. Se ele existir no sistema, um link de redefinição será gerado.</p>
+    <p class="apoio">Informe seu e-mail cadastrado. A administração recebe o pedido e
+       entrega a você o link de redefinição.</p>
     <form class="formulario" id="form-recuperar" novalidate>
       <div class="campo">
         <label for="email">E-mail cadastrado</label>
         <input class="entrada" type="email" id="email" name="email" inputmode="email"
                autocomplete="username" placeholder="seu.nome@sostruck.com.br" required>
       </div>
-      <button class="botao botao-principal botao-bloco botao-grande" type="submit">Gerar link de recuperação</button>
+      <button class="botao botao-principal botao-bloco botao-grande" type="submit">Solicitar recuperação</button>
       <button class="botao botao-texto botao-bloco" type="button" data-voltar-login>Voltar para o login</button>
     </form>
     <div id="resultado-recuperacao" class="mt14"></div>`);
@@ -97,14 +98,12 @@ export function telaRecuperarSenha(raiz, { irPara }) {
     ocupado(botao, true, 'Enviando…');
     try {
       const resposta = await api.autenticacao.recuperar(form.email.value.trim());
-      const area = raiz.querySelector('#resultado-recuperacao');
-      area.innerHTML = `
-        <div class="faixa-alerta ${resposta.link_recuperacao ? 'sucesso' : 'info'}">
-          ${icone(resposta.link_recuperacao ? 'certo' : 'info', 19)}
-          <div><b>${esc(resposta.mensagem)}</b>
-          ${resposta.link_recuperacao
-            ? `<a class="botao botao-principal botao-bloco mt10" href="${esc(resposta.link_recuperacao.replace(/^\//, ''))}">Redefinir minha senha agora</a>`
-            : ''}</div>
+      // O link nunca vem na resposta: quem o recebesse trocaria a senha da conta
+      // sem saber a atual. Quem entrega o link é a administração.
+      raiz.querySelector('#resultado-recuperacao').innerHTML = `
+        <div class="faixa-alerta info">
+          ${icone('info', 19)}
+          <div><b>${esc(resposta.mensagem)}</b></div>
         </div>`;
       ocupado(botao, false);
     } catch (erro) {
@@ -126,15 +125,15 @@ export function telaRedefinirSenha(raiz, { irPara, token }) {
 
   raiz.innerHTML = moldura(`
     <h1>Criar nova senha</h1>
-    <p class="apoio">Escolha uma senha com pelo menos 6 caracteres.</p>
+    <p class="apoio">Escolha uma senha com pelo menos 8 caracteres. Evite datas, placas e o seu e-mail.</p>
     <form class="formulario" id="form-redefinir" novalidate>
       <div class="campo">
         <label for="senha">Nova senha</label>
-        <input class="entrada" type="password" id="senha" name="senha" autocomplete="new-password" minlength="6" required>
+        <input class="entrada" type="password" id="senha" name="senha" autocomplete="new-password" minlength="8" required>
       </div>
       <div class="campo">
         <label for="confirmacao">Repita a nova senha</label>
-        <input class="entrada" type="password" id="confirmacao" name="confirmacao" autocomplete="new-password" minlength="6" required>
+        <input class="entrada" type="password" id="confirmacao" name="confirmacao" autocomplete="new-password" minlength="8" required>
       </div>
       <button class="botao botao-principal botao-bloco botao-grande" type="submit">Salvar nova senha</button>
     </form>`);

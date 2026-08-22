@@ -8,7 +8,9 @@ const { db } = require('../db');
  */
 function registrar(req, { entidade, entidade_id, acao, descricao, detalhes }) {
   const usuario = (req && req.usuario) || null;
-  const ip = req ? (req.headers['x-forwarded-for'] || req.ip || '').toString().split(',')[0].trim() : null;
+  // Sempre o IP resolvido pelo Express: o cabecalho cru e escolhido pelo cliente
+  // e encheria o historico de origens falsas.
+  const ip = req ? String(req.ip || '') : null;
   db.prepare(
     `INSERT INTO historico (entidade, entidade_id, acao, descricao, detalhes, usuario_id, usuario_nome, ip)
      VALUES (@entidade, @entidade_id, @acao, @descricao, @detalhes, @usuario_id, @usuario_nome, @ip)`

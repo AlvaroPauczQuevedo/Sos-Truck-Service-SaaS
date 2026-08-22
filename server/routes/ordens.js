@@ -367,6 +367,16 @@ router.get('/:id/pdf', rota((req, res) => {
     empresa: ordem.empresa_id ? db.prepare('SELECT * FROM empresas WHERE id = ?').get(ordem.empresa_id) : null,
     ficha: ordem.ficha_id ? db.prepare('SELECT numero FROM fichas WHERE id = ?').get(ordem.ficha_id) : null,
     responsavel: ordem.responsavel_id ? db.prepare('SELECT nome FROM usuarios WHERE id = ?').get(ordem.responsavel_id) : null,
+    // Fotos das pecas compradas: ajudam o fornecedor a conferir o item.
+    fotos: db.prepare(
+      `SELECT ft.entidade, ft.entidade_id, ft.arquivo, ft.mime, ft.nome_original, ft.legenda,
+              ft.criado_em, u.nome AS enviado_por
+         FROM fotos ft
+         LEFT JOIN usuarios u ON u.id = ft.criado_por
+        WHERE ft.entidade = 'peca'
+          AND ft.entidade_id IN (SELECT peca_id FROM ordens_itens WHERE ordem_id = ? AND peca_id IS NOT NULL)
+        ORDER BY ft.id`
+    ).all(ordem.id),
   };
   registrar(req, { entidade: 'ordem_compra', entidade_id: ordem.id, acao: 'pdf_gerado', descricao: `PDF da ordem ${ordem.numero} gerado` });
   res.setHeader('Content-Type', 'application/pdf');

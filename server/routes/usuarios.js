@@ -50,7 +50,7 @@ router.post('/', rota((req, res) => {
   if (db.prepare('SELECT id FROM usuarios WHERE email = ?').get(dados.email)) {
     throw erro.conflito('Já existe um usuário com este e-mail.', { campo: 'email' });
   }
-  const senha = a.validarForcaSenha(req.body.senha);
+  const senha = a.validarForcaSenha(req.body.senha, { email: dados.email });
   const info = db.prepare(
     `INSERT INTO usuarios (nome, email, senha_hash, perfil, telefone, matricula)
      VALUES (@nome, @email, @senha_hash, @perfil, @telefone, @matricula)`
@@ -96,14 +96,46 @@ router.put('/:id', rota((req, res) => {
 router.post('/:id/senha', rota((req, res) => {
   const usuario = db.prepare('SELECT * FROM usuarios WHERE id = ?').get(req.params.id);
   if (!usuario) throw erro.naoEncontrado('Usuário não encontrado.');
-  const senha = a.validarForcaSenha(req.body.senha);
+  const senha = a.validarForcaSenha(req.body.senha, { email: usuario.email });
   db.prepare("UPDATE usuarios SET senha_hash=?, reset_token=NULL, reset_expira=NULL, atualizado_em=datetime('now') WHERE id=?")
     .run(a.criarHash(senha), usuario.id);
+  // Trocar a senha de alguem sem derrubar as sessoes dele deixaria um aparelho
+  // perdido/roubado conectado mesmo depois da troca.
+  a.encerrarSessoes(usuario.id);
   registrar(req, {
     entidade: 'usuario', entidade_id: usuario.id, acao: 'senha_redefinida_admin',
-    descricao: `Senha de "${usuario.nome}" redefinida pela administração`,
+    descricao: `Senha de "${usuario.nome}" redefinida pela administração — sessões encerradas`,
   });
-  res.json({ ok: true, mensagem: 'Senha redefinida. Informe a nova senha ao usuário.' });
+  res.json({ ok: true, mensagem: 'Senha redefinida e aparelhos desconectados. Informe a nova senha ao usuário.' });
+}));
+
+/**
+ * Gera um link de redefinicao para a administracao repassar ao usuario
+ * (WhatsApp, pessoalmente, etc.). Fica aqui, e nao no endpoint anonimo de
+ * recuperacao, porque quem recebe o link troca a senha da conta sem saber a
+ * atual - so faz sentido para quem ja provou ser administrador.
+ */
+router.post('/:id/link-recuperacao', rota((req, res) => {
+  const usuario = db.prepare('SELECT id, nome, email, ativo FROM usuarios WHERE id = ?').get(req.params.id);
+  if (!usuario) throw erro.naoEncontrado('Usuário não encontrado.');
+  if (!usuario.ativo) throw erro.conflito('Este usuário está inativo. Reative-o antes de gerar o link.');
+
+  const token = a.gerarTokenRecuperacao();
+  db.prepare(
+    `UPDATE usuarios SET reset_token = ?, reset_expira = datetime('now', '+1 hour') WHERE id = ?`
+  ).run(a.hashRecuperacao(token), usuario.id);
+
+  registrar(req, {
+    entidade: 'usuario', entidade_id: usuario.id, acao: 'link_recuperacao_gerado',
+    descricao: `Link de redefinição de senha gerado para "${usuario.nome}"`,
+  });
+
+  res.json({
+    ok: true,
+    link: `/#/redefinir-senha?token=${token}`,
+    validade_horas: 1,
+    mensagem: `Entregue este link a ${usuario.nome}. Ele vale 1 hora e só pode ser usado uma vez.`,
+  });
 }));
 
 router.post('/:id/inativar', rota((req, res) => {
@@ -116,6 +148,8 @@ router.post('/:id/inativar', rota((req, res) => {
   }
   const ativo = usuario.ativo ? 0 : 1;
   db.prepare("UPDATE usuarios SET ativo=?, atualizado_em=datetime('now') WHERE id=?").run(ativo, usuario.id);
+  // Inativar tem de valer agora, inclusive para quem ja esta com o app aberto.
+  if (!ativo) a.encerrarSessoes(usuario.id);
   registrar(req, {
     entidade: 'usuario', entidade_id: usuario.id, acao: ativo ? 'reativado' : 'inativado',
     descricao: `Usuário "${usuario.nome}" ${ativo ? 'reativado' : 'inativado'}`,

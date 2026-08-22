@@ -171,6 +171,7 @@ export const api = {
     criar: (dados) => enviar('/usuarios', dados),
     salvar: (id, dados) => alterar(`/usuarios/${id}`, dados),
     redefinirSenha: (id, senha) => enviar(`/usuarios/${id}/senha`, { senha }),
+    linkRecuperacao: (id) => enviar(`/usuarios/${id}/link-recuperacao`, {}),
     inativar: (id) => enviar(`/usuarios/${id}/inativar`, {}),
   },
   relatorios: {

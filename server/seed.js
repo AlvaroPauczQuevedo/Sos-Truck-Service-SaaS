@@ -11,7 +11,17 @@ const { gravarConfiguracoes } = require('./lib/config');
 const D = require('./lib/dominio');
 
 const RESETAR = process.argv.includes('--reset');
-const SEM_DEMO = process.argv.includes('--sem-demo') || process.argv.includes('--limpo');
+const PRODUCAO = process.env.NODE_ENV === 'production';
+// Em producao os dados de exemplo nunca entram: eles trazem caminhoes, fichas e
+// fornecedores ficticios que se misturariam aos reais.
+const SEM_DEMO = PRODUCAO || process.argv.includes('--sem-demo') || process.argv.includes('--limpo');
+
+/** Senha inicial sorteada, legivel para ditar por telefone. */
+function senhaSorteada() {
+  const alfabeto = 'abcdefghijkmnopqrstuvwxyz23456789';
+  const bytes = require('crypto').randomBytes(14);
+  return Array.from(bytes, (b) => alfabeto[b % alfabeto.length]).join('');
+}
 
 function limpar() {
   const tabelas = [
@@ -69,10 +79,26 @@ function criarUsuario(nome, email, senha, perfil, telefone, matricula) {
 }
 
 function semearUsuarios() {
-  const admin = criarUsuario('Administração SOS', 'admin@sostruck.com.br', 'sos12345', 'admin', '41999990001', 'ADM-001');
-  const mecanico = criarUsuario('Carlos Ferreira', 'mecanico@sostruck.com.br', 'sos12345', 'mecanico', '41999990002', 'MEC-001');
-  const mecanico2 = criarUsuario('Jonas Ribeiro', 'jonas@sostruck.com.br', 'sos12345', 'mecanico', '41999990003', 'MEC-002');
-  console.log('• Usuários criados (senha padrão: sos12345).');
+  // Em producao ninguem nasce com senha conhecida: cada usuario recebe uma
+  // senha sorteada, mostrada UMA vez aqui no console para a administracao anotar.
+  const senhas = {};
+  const senhaDe = (chave) => {
+    if (!PRODUCAO) return 'sos12345';
+    senhas[chave] = senhaSorteada();
+    return senhas[chave];
+  };
+
+  const admin = criarUsuario('Administração SOS', 'admin@sostruck.com.br', senhaDe('admin@sostruck.com.br'), 'admin', '41999990001', 'ADM-001');
+  const mecanico = criarUsuario('Carlos Ferreira', 'mecanico@sostruck.com.br', senhaDe('mecanico@sostruck.com.br'), 'mecanico', '41999990002', 'MEC-001');
+  const mecanico2 = criarUsuario('Jonas Ribeiro', 'jonas@sostruck.com.br', senhaDe('jonas@sostruck.com.br'), 'mecanico', '41999990003', 'MEC-002');
+
+  if (PRODUCAO) {
+    console.log('\n• Usuários criados. ANOTE AGORA — estas senhas não aparecem de novo:');
+    for (const [email, senha] of Object.entries(senhas)) console.log(`    ${email}  →  ${senha}`);
+    console.log('  Troque-as no primeiro acesso em Configurações › Minha conta.\n');
+  } else {
+    console.log('• Usuários criados (senha padrão de desenvolvimento: sos12345).');
+  }
   return { admin, mecanico, mecanico2 };
 }
 
@@ -459,9 +485,13 @@ function main() {
   semearConfiguracoes();
   const usuarios = semearUsuarios();
   if (!SEM_DEMO) semearDemonstracao(usuarios);
-  console.log('\nPronto! Acesse o sistema com:');
-  console.log('  Administração → admin@sostruck.com.br / sos12345');
-  console.log('  Mecânico      → mecanico@sostruck.com.br / sos12345');
+  if (PRODUCAO) {
+    console.log('Pronto. Modo produção: sem dados de demonstração e sem senha padrão.');
+  } else {
+    console.log('\nPronto! Acesse o sistema com:');
+    console.log('  Administração → admin@sostruck.com.br / sos12345');
+    console.log('  Mecânico      → mecanico@sostruck.com.br / sos12345');
+  }
 }
 
 db.ready.then(main);

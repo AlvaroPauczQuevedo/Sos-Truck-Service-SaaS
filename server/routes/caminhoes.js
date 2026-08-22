@@ -249,6 +249,7 @@ router.post('/:id/fotos', upload.array('fotos', 12), rota((req, res) => {
   if (!caminhao) throw erro.naoEncontrado('Caminhão não encontrado.');
   if (!req.files || !req.files.length) throw erro.requisicao('Selecione ao menos uma foto.');
   fotos.salvar(req, 'caminhao', caminhao.id, req.files, v.texto(req.body.legenda, 'Legenda', { max: 200 }));
+  fotos.exigirAlgumaFotoValida(req);
   res.status(201).json({ ok: true, fotos: fotos.listar('caminhao', caminhao.id) });
 }));
 

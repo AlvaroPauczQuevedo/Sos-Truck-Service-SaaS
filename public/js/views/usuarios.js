@@ -71,6 +71,7 @@ export async function telaUsuarios(raiz) {
               <div class="cartao-rodape">
                 <button class="botao botao-contorno botao-pequeno" data-editar="${u.id}">${icone('lapis', 15)} Editar</button>
                 <button class="botao botao-contorno botao-pequeno" data-senha="${u.id}" data-nome="${esc(u.nome)}">${icone('chave', 15)} Redefinir senha</button>
+                ${u.ativo ? `<button class="botao botao-contorno botao-pequeno" data-link="${u.id}" data-nome="${esc(u.nome)}">${icone('compartilhar', 15)} Gerar link</button>` : ''}
                 ${u.id === estado.usuario.id ? '<span class="mini" style="align-self:center">Seu usuário</span>' : `
                   <button class="botao botao-texto botao-pequeno ${u.ativo ? 'cor-vermelho' : ''}" data-inativar="${u.id}">
                     ${u.ativo ? 'Inativar' : 'Reativar'}</button>`}
@@ -86,6 +87,9 @@ export async function telaUsuarios(raiz) {
       });
       area.querySelectorAll('[data-senha]').forEach((b) => {
         b.onclick = () => abrirRedefinicao(Number(b.dataset.senha), b.dataset.nome);
+      });
+      area.querySelectorAll('[data-link]').forEach((b) => {
+        b.onclick = () => gerarLinkRecuperacao(Number(b.dataset.link), b.dataset.nome, b);
       });
       area.querySelectorAll('[data-inativar]').forEach((b) => {
         b.onclick = async () => {
@@ -157,8 +161,8 @@ function abrirForm(usuario, aoSalvar) {
         ${usuario ? '' : `
           <div class="campo">
             <label for="us-senha">Senha inicial <span class="obrigatorio">*</span></label>
-            <input class="entrada" type="text" id="us-senha" name="senha" minlength="6" required
-                   placeholder="Mínimo de 6 caracteres" autocomplete="new-password">
+            <input class="entrada" type="text" id="us-senha" name="senha" minlength="8" required
+                   placeholder="Mínimo de 8 caracteres" autocomplete="new-password">
             <span class="dica">Informe esta senha ao usuário — ele poderá alterá-la depois.</span>
           </div>`}
       </form>`,
@@ -191,6 +195,56 @@ function abrirForm(usuario, aoSalvar) {
   };
 }
 
+/**
+ * Gera o link de redefinição para a administração entregar ao usuário.
+ * O link vale por uma hora e substitui o antigo "gerar link" da tela de login,
+ * que entregava o token para qualquer um que soubesse o e-mail.
+ */
+async function gerarLinkRecuperacao(id, nome, botao) {
+  ocupado(botao, true, 'Gerando…');
+  let resposta;
+  try {
+    resposta = await api.usuarios.linkRecuperacao(id);
+  } catch (erro) {
+    ocupado(botao, false);
+    avisarErro(erro);
+    return;
+  }
+  ocupado(botao, false);
+
+  const url = `${window.location.origin}/${resposta.link.replace(/^\//, '')}`;
+  const { elemento, fechar } = abrirModal({
+    titulo: 'Link de redefinição',
+    conteudo: `
+      <p class="apoio mb12">Entregue este link a <b>${esc(nome)}</b>. Ele vale
+        <b>1 hora</b>, serve uma única vez e permite escolher uma nova senha.</p>
+      <div class="campo">
+        <label for="link-recuperacao">Link</label>
+        <input class="entrada" id="link-recuperacao" type="text" readonly value="${esc(url)}">
+      </div>
+      <div class="faixa-alerta alerta mt12">${icone('alerta', 19)}
+        <div>Quem tiver este link troca a senha de ${esc(nome)} sem precisar da senha atual.
+        Envie apenas para a própria pessoa.</div>
+      </div>`,
+    rodape: `<button class="botao botao-contorno" data-fechar>Fechar</button>
+             <button class="botao botao-principal" data-copiar>${icone('compartilhar', 16)} Copiar link</button>`,
+  });
+
+  const campo = elemento.querySelector('#link-recuperacao');
+  campo.onfocus = () => campo.select();
+
+  elemento.querySelector('[data-copiar]').onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(url);
+      avisar('Link copiado para a área de transferência.', 'sucesso');
+      fechar();
+    } catch (_) {
+      campo.select();
+      avisar('Copie o link selecionado acima.', 'info');
+    }
+  };
+}
+
 function abrirRedefinicao(id, nome) {
   const { elemento, fechar } = abrirModal({
     titulo: 'Redefinir senha',
@@ -198,14 +252,14 @@ function abrirRedefinicao(id, nome) {
       <p class="apoio mb12">Defina uma nova senha para <b>${esc(nome)}</b> e informe ao usuário.</p>
       <div class="campo">
         <label for="nova-senha">Nova senha <span class="obrigatorio">*</span></label>
-        <input class="entrada" type="text" id="nova-senha" minlength="6" placeholder="Mínimo de 6 caracteres" autocomplete="new-password">
+        <input class="entrada" type="text" id="nova-senha" minlength="8" placeholder="Mínimo de 8 caracteres" autocomplete="new-password">
       </div>`,
     rodape: `<button class="botao botao-contorno" data-fechar>Cancelar</button>
              <button class="botao botao-principal" data-salvar>Redefinir senha</button>`,
   });
   elemento.querySelector('[data-salvar]').onclick = async (e) => {
     const senha = elemento.querySelector('#nova-senha').value;
-    if (senha.length < 6) { avisar('A senha precisa ter ao menos 6 caracteres.', 'alerta'); return; }
+    if (senha.length < 8) { avisar('A senha precisa ter ao menos 8 caracteres.', 'alerta'); return; }
     ocupado(e.target, true, 'Salvando…');
     try {
       await api.usuarios.redefinirSenha(id, senha);

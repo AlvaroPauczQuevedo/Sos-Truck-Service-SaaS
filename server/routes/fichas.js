@@ -187,6 +187,7 @@ router.post('/:id/fotos', upload.array('fotos', 12), rota((req, res) => {
   L.exigirEdicaoMecanico(req, ficha);
   if (!req.files || !req.files.length) throw erro.requisicao('Selecione ao menos uma foto.');
   fotosLib.salvar(req, 'ficha', ficha.id, req.files, v.texto(req.body.legenda, 'Legenda', { max: 200 }));
+  fotosLib.exigirAlgumaFotoValida(req);
   res.status(201).json({ ok: true, fotos: fotosLib.listar('ficha', ficha.id) });
 }));
 
@@ -480,6 +481,17 @@ router.get('/:id/pdf', rota(async (req, res) => {
          JOIN usuarios u ON u.id = co.usuario_id
         WHERE co.ficha_id = ? ${admin ? '' : 'AND co.interno = 0'} ORDER BY co.criado_em`
     ).all(ficha.id),
+    // Fotos da ficha, dos problemas e das pecas, para saírem impressas junto.
+    fotos: db.prepare(
+      `SELECT ft.entidade, ft.entidade_id, ft.arquivo, ft.mime, ft.nome_original, ft.legenda,
+              ft.criado_em, u.nome AS enviado_por
+         FROM fotos ft
+         LEFT JOIN usuarios u ON u.id = ft.criado_por
+        WHERE (ft.entidade = 'ficha'    AND ft.entidade_id = @ficha)
+           OR (ft.entidade = 'problema' AND ft.entidade_id IN (SELECT id FROM problemas WHERE ficha_id = @ficha))
+           OR (ft.entidade = 'peca'     AND ft.entidade_id IN (SELECT id FROM pecas_solicitadas WHERE ficha_id = @ficha))
+        ORDER BY ft.id`
+    ).all({ ficha: ficha.id }),
   };
   registrar(req, { entidade: 'ficha', entidade_id: ficha.id, acao: 'pdf_gerado', descricao: `PDF da ficha ${ficha.numero} gerado` });
 

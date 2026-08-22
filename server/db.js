@@ -151,6 +151,9 @@ CREATE TABLE IF NOT EXISTS usuarios (
   telefone       TEXT,
   matricula      TEXT,
   ativo          INTEGER NOT NULL DEFAULT 1,
+  -- Sobe a cada troca de senha ou inativacao: derruba todas as sessoes abertas
+  -- daquele usuario, porque o token antigo carrega a epoca antiga.
+  sessao_epoca   INTEGER NOT NULL DEFAULT 0,
   ultimo_acesso  TEXT,
   reset_token    TEXT,
   reset_expira   TEXT,
@@ -527,6 +530,19 @@ CREATE TABLE IF NOT EXISTS sequencias (
 );
 
 -- ------------------------------------------------------------------
+-- Sessoes encerradas antes da hora (logout de um aparelho especifico).
+-- O JWT nao da para "apagar", entao o identificador dele fica aqui ate a data
+-- em que expiraria de qualquer jeito. Linhas vencidas sao removidas sozinhas.
+-- ------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS sessoes_revogadas (
+  jti        TEXT PRIMARY KEY,
+  usuario_id INTEGER REFERENCES usuarios(id),
+  expira_em  TEXT NOT NULL,
+  criado_em  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS ix_sessoes_expira ON sessoes_revogadas(expira_em);
+
+-- ------------------------------------------------------------------
 -- Configuracoes gerais do sistema
 -- ------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS configuracoes (
@@ -553,6 +569,27 @@ function gerarNumero(tipo) {
   return proximoNumero(tipo, new Date().getFullYear());
 }
 
+/**
+ * Colunas acrescentadas depois que bancos ja estavam em uso. O CREATE TABLE do
+ * esquema tem IF NOT EXISTS, entao ele nao altera tabela existente - quem faz
+ * isso e esta lista. Cada entrada precisa ser idempotente.
+ */
+const COLUNAS_NOVAS = [
+  ['usuarios', 'sessao_epoca', 'INTEGER NOT NULL DEFAULT 0'],
+];
+
+function migrar() {
+  for (const [tabela, coluna, definicao] of COLUNAS_NOVAS) {
+    const existe = sqljs.exec(`PRAGMA table_info(${tabela})`);
+    if (!existe.length) continue; // tabela recem-criada ja veio com a coluna
+    const nomes = existe[0].values.map((linha) => linha[1]);
+    if (nomes.includes(coluna)) continue;
+    sqljs.run(`ALTER TABLE ${tabela} ADD COLUMN ${coluna} ${definicao}`);
+    console.log(`[banco] coluna ${tabela}.${coluna} adicionada.`);
+    sujo = true;
+  }
+}
+
 /** Resolve quando o banco (em memoria) esta carregado e pronto para uso. */
 db.ready = (async () => {
   const SQL = await initSqlJs();
@@ -561,7 +598,9 @@ db.ready = (async () => {
   sqljs = bytes && bytes.length ? new SQL.Database(bytes) : new SQL.Database();
   sqljs.run('PRAGMA foreign_keys = ON');
   sqljs.run(SCHEMA);
-  if (!bytes || !bytes.length) { sujo = true; gravarNoDisco(); }
+  migrar();
+  if (!bytes || !bytes.length) sujo = true;
+  gravarNoDisco();
 })();
 
 for (const sinal of ['exit', 'SIGINT', 'SIGTERM']) {

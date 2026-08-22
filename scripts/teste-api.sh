@@ -14,6 +14,12 @@ verificar() { # nome | esperado_regex | conteudo
   else echo "  FALHA $1"; echo "        esperado /$2/ em: $(printf '%s' "$3" | head -c 400)"; FALHA=$((FALHA+1)); fi
 }
 
+negar() { # nome | proibido_regex | conteudo
+  if printf '%s' "$3" | grep -qE "$2"; then
+    echo "  FALHA $1"; echo "        NAO devia conter /$2/, mas veio: $(printf '%s' "$3" | head -c 400)"; FALHA=$((FALHA+1));
+  else echo "  ok   $1"; OK=$((OK+1)); fi
+}
+
 echo "== Autenticação =="
 c -c "$TMP/adm.txt" -X POST "$BASE/api/auth/login" -H 'Content-Type: application/json' \
   -d '{"email":"admin@sostruck.com.br","senha":"sos12345"}' > "$TMP/r"
@@ -22,8 +28,13 @@ c -c "$TMP/mec.txt" -X POST "$BASE/api/auth/login" -H 'Content-Type: application
   -d '{"email":"mecanico@sostruck.com.br","senha":"sos12345"}' > "$TMP/r"
 verificar "login do mecânico" '"perfil":"mecanico"' "$(cat $TMP/r)"
 verificar "bloqueio sem sessão" 'Sessão expirada' "$(c $BASE/api/painel)"
-verificar "recuperação de senha" 'link_recuperacao' \
-  "$(c -X POST $BASE/api/auth/recuperar-senha -H 'Content-Type: application/json' -d '{"email":"mecanico@sostruck.com.br"}')"
+# O endpoint anonimo de recuperacao aceita o pedido, mas NUNCA devolve o link:
+# devolve-lo entregaria a conta a quem soubesse o e-mail do administrador. Quem
+# entrega o link e a administracao, por /api/usuarios/:id/link-recuperacao.
+RECUP="$(c -X POST $BASE/api/auth/recuperar-senha -H 'Content-Type: application/json' -d '{"email":"mecanico@sostruck.com.br"}')"
+verificar "recuperação de senha aceita o pedido" '"ok":true' "$RECUP"
+negar     "recuperação NAO devolve o link"       'link_recuperacao|redefinir-senha|token' "$RECUP"
+negar     "recuperação NAO revela o cadastro"    'mecanico@sostruck' "$RECUP"
 
 echo "== Permissões por perfil =="
 verificar "mecânico não acessa fornecedores" 'exclusiva da administração' "$(mec $BASE/api/fornecedores)"
@@ -31,6 +42,8 @@ verificar "mecânico não acessa cotações"     'exclusiva da administração' 
 verificar "mecânico não acessa ordens"       'exclusiva da administração' "$(mec $BASE/api/ordens)"
 verificar "mecânico não acessa relatórios"   'exclusiva da administração' "$(mec $BASE/api/relatorios/geral)"
 verificar "mecânico não lista usuários"      'exclusiva da administração' "$(mec $BASE/api/usuarios)"
+verificar "mecânico não gera link de recuperação" 'exclusiva da administração' "$(mec -X POST $BASE/api/usuarios/1/link-recuperacao)"
+verificar "administração gera link de recuperação" 'redefinir-senha' "$(adm -X POST $BASE/api/usuarios/2/link-recuperacao)"
 verificar "administração acessa fornecedores" '"itens"' "$(adm $BASE/api/fornecedores)"
 
 echo "== Painéis =="
@@ -81,8 +94,8 @@ verificar "sistema inválido rejeitado" 'Valor inválido' \
 echo "== Peças =="
 CATS=$(mec "$BASE/api/pecas/categorias")
 verificar "árvore de categorias" 'subcategorias' "$CATS"
-CAT_ID=$(printf '%s' "$CATS" | python3 -c "import json,sys;d=json.load(sys.stdin);c=[x for x in d['itens'] if x['nome']=='Cabine e acabamento'][0];print(c['id'])")
-SUB_ID=$(printf '%s' "$CATS" | python3 -c "import json,sys;d=json.load(sys.stdin);c=[x for x in d['itens'] if x['nome']=='Cabine e acabamento'][0];print([s for s in c['subcategorias'] if s['nome']=='Suspensão da cabine'][0]['id'])")
+CAT_ID=$(printf '%s' "$CATS" | python3 -X utf8 -c "import json,sys;d=json.load(sys.stdin);c=[x for x in d['itens'] if x['nome']=='Cabine e acabamento'][0];print(c['id'])")
+SUB_ID=$(printf '%s' "$CATS" | python3 -X utf8 -c "import json,sys;d=json.load(sys.stdin);c=[x for x in d['itens'] if x['nome']=='Cabine e acabamento'][0];print([s for s in c['subcategorias'] if s['nome']=='Suspensão da cabine'][0]['id'])")
 verificar "peça sem motivo é rejeitada" 'Motivo da troca' \
   "$(mec -X POST "$BASE/api/fichas/$FID/pecas" -H 'Content-Type: application/json' -d "{\"categoria_id\":$CAT_ID,\"nome\":\"Bucha\",\"quantidade\":2}")"
 verificar "peça sem categoria é rejeitada" 'Categoria' \
@@ -116,7 +129,7 @@ verificar "ficha aceita pela administração" '"status":"em_cotacao"' \
 echo "== Cotação =="
 COT=$(adm -X POST "$BASE/api/cotacoes" -H 'Content-Type: application/json' -d "{\"ficha_id\":$FID}")
 verificar "cotação com número automático" 'COT-[0-9]{4}-[0-9]{4}' "$COT"
-CID=$(printf '%s' "$COT" | python3 -c "import json,sys;print(json.load(sys.stdin)['cotacao']['id'])")
+CID=$(printf '%s' "$COT" | python3 -X utf8 -c "import json,sys;print(json.load(sys.stdin)['cotacao']['id'])")
 verificar "cotação duplicada bloqueada" 'já possui a cotação' \
   "$(adm -X POST "$BASE/api/cotacoes" -H 'Content-Type: application/json' -d "{\"ficha_id\":$FID}")"
 P1=$(adm -X POST "$BASE/api/cotacoes/$CID/propostas" -H 'Content-Type: application/json' \
@@ -131,7 +144,7 @@ verificar "diferença entre fornecedores calculada" '"diferenca_menor"' "$(cat $
 verificar "nenhuma proposta pré-selecionada" '"pecas_selecionadas":0' "$(cat $TMP/p2)"
 verificar "desconto maior que o total é rejeitado" 'desconto não pode ser maior' \
   "$(adm -X POST "$BASE/api/cotacoes/$CID/propostas" -H 'Content-Type: application/json' -d "{\"peca_id\":$PECA_ID,\"fornecedor_id\":1,\"valor_unitario\":100,\"desconto\":99999}")"
-PROP_ID=$(cat "$TMP/p2" | python3 -c "
+PROP_ID=$(cat "$TMP/p2" | python3 -X utf8 -c "
 import json,sys
 d=json.load(sys.stdin)
 p=[x for x in d['itens'][0]['propostas'] if x['menor_valor']][0]
@@ -147,7 +160,7 @@ verificar "prévia agrupada por fornecedor" '"grupos"' "$(adm $BASE/api/ordens/p
 OC=$(adm -X POST "$BASE/api/ordens" -H 'Content-Type: application/json' \
   -d "{\"cotacao_id\":$CID,\"fornecedor_id\":2,\"forma_pagamento\":\"Boleto 30/60\",\"endereco_entrega\":\"Oficina SOS — Curitiba/PR\",\"observacoes\":\"Entregar aos cuidados da oficina\"}")
 verificar "ordem com número automático" 'OC-[0-9]{4}-[0-9]{4}' "$OC"
-OID=$(printf '%s' "$OC" | python3 -c "import json,sys;print(json.load(sys.stdin)['id'])")
+OID=$(printf '%s' "$OC" | python3 -X utf8 -c "import json,sys;print(json.load(sys.stdin)['id'])")
 verificar "total da ordem calculado" '"total":650' "$OC"
 verificar "ordem sem peças pendentes bloqueada" 'Não há peças aprovadas pendentes' \
   "$(adm -X POST "$BASE/api/ordens" -H 'Content-Type: application/json' -d "{\"cotacao_id\":$CID,\"fornecedor_id\":2}")"
@@ -156,7 +169,7 @@ verificar "PDF da ordem de compra" '200 application/pdf' "$(cat $TMP/pdfr)"
 verificar "PDF é um arquivo válido" 'PDF document' "$(file $TMP/oc.pdf)"
 
 echo "== Recebimento e instalação =="
-ITEM=$(adm $BASE/api/ordens/$OID | python3 -c "import json,sys;print(json.load(sys.stdin)['itens'][0]['id'])")
+ITEM=$(adm $BASE/api/ordens/$OID | python3 -X utf8 -c "import json,sys;print(json.load(sys.stdin)['itens'][0]['id'])")
 verificar "recebimento total da ordem" '"status":"recebida"' \
   "$(adm -X POST "$BASE/api/ordens/$OID/receber" -H 'Content-Type: application/json' -d "{\"itens\":[{\"item_id\":$ITEM}],\"nota_fiscal\":\"12345\"}")"
 verificar "mecânico notificado do recebimento" 'Peças recebidas' "$(mec $BASE/api/notificacoes)"
@@ -193,11 +206,12 @@ verificar "ficha cancelada permanece no sistema" "\"id\":$FID2" "$(adm $BASE/api
 
 echo "== Usuários e configurações =="
 verificar "criação de usuário" '"perfil":"mecanico"' \
-  "$(adm -X POST "$BASE/api/usuarios" -H 'Content-Type: application/json' -d '{"nome":"Teste Mecânico","email":"teste.mec@sostruck.com.br","senha":"senha123","perfil":"mecanico"}')"
+  "$(adm -X POST "$BASE/api/usuarios" -H 'Content-Type: application/json' -d '{"nome":"Teste Mecânico","email":"teste.mec@sostruck.com.br","senha":"oficina-curitiba-2026","perfil":"mecanico"}')"
 verificar "e-mail duplicado bloqueado" 'Já existe' \
-  "$(adm -X POST "$BASE/api/usuarios" -H 'Content-Type: application/json' -d '{"nome":"Outro","email":"teste.mec@sostruck.com.br","senha":"senha123","perfil":"mecanico"}')"
-verificar "senha fraca bloqueada" 'pelo menos 6' \
+  "$(adm -X POST "$BASE/api/usuarios" -H 'Content-Type: application/json' -d '{"nome":"Outro","email":"teste.mec@sostruck.com.br","senha":"oficina-curitiba-2026","perfil":"mecanico"}')"
+verificar "senha curta bloqueada" 'pelo menos 8' \
   "$(adm -X POST "$BASE/api/usuarios" -H 'Content-Type: application/json' -d '{"nome":"Usuário Teste","email":"x@sostruck.com.br","senha":"123","perfil":"mecanico"}')"
+verificar "senha óbvia bloqueada" 'conhecida demais'   "$(adm -X POST "$BASE/api/usuarios" -H 'Content-Type: application/json' -d '{"nome":"Usuário Teste","email":"y@sostruck.com.br","senha":"senha123","perfil":"mecanico"}')"
 verificar "gravação de configurações" 'SOS TRUCK SERVICE LTDA' \
   "$(adm -X PUT "$BASE/api/sistema/configuracoes" -H 'Content-Type: application/json' -d '{"empresa_nome":"SOS TRUCK SERVICE LTDA","empresa_telefone":"4133330000"}')"
 verificar "domínios disponíveis" 'status_ficha' "$(c $BASE/api/sistema/dominios)"

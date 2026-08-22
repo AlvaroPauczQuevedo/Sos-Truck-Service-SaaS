@@ -273,9 +273,9 @@ function abrirTrocaSenha() {
         <div class="campo"><label for="sa">Senha atual <span class="obrigatorio">*</span></label>
           <input class="entrada" type="password" id="sa" name="senha_atual" autocomplete="current-password" required></div>
         <div class="campo"><label for="sn">Nova senha <span class="obrigatorio">*</span></label>
-          <input class="entrada" type="password" id="sn" name="senha_nova" minlength="6" autocomplete="new-password" required></div>
+          <input class="entrada" type="password" id="sn" name="senha_nova" minlength="8" autocomplete="new-password" required></div>
         <div class="campo"><label for="sc">Repita a nova senha <span class="obrigatorio">*</span></label>
-          <input class="entrada" type="password" id="sc" name="confirmacao" minlength="6" autocomplete="new-password" required></div>
+          <input class="entrada" type="password" id="sc" name="confirmacao" minlength="8" autocomplete="new-password" required></div>
       </form>`,
     rodape: `<button class="botao botao-contorno" data-fechar>Cancelar</button>
              <button class="botao botao-principal" data-salvar>Trocar senha</button>`,

@@ -19,9 +19,11 @@
     "bcryptjs": "^3.0.2",
     "cookie-parser": "^1.4.7",
     "express": "^5.1.0",
+    "jpeg-js": "^0.4.4",
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.2",
     "pdfkit": "^0.17.2",
+    "pngjs": "^7.0.0",
     "sql.js": "^1.14.2"
   }
 }
